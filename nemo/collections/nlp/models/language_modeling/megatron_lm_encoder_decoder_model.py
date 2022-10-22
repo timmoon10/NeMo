@@ -308,6 +308,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         tensor_shape = [encoder_seq_length, get_micro_batch_size(), self.cfg.encoder.hidden_size]
 
         # handle asynchronous grad reduction
+        custom_sync_context_handler = None
+        custom_grad_sync_func = None
         if self.with_distributed_adam:
             if self.megatron_amp_o2:
                 # copy grads to main grad
@@ -339,6 +341,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 dtype=self.autocast_dtype,
                 grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
                 custom_sync_context_handler=custom_sync_context_handler,
+                custom_grad_sync_func=custom_grad_sync_func,
             )
         else:
             losses_reduced_per_micro_batch = forward_backward_no_pipelining(
@@ -363,11 +366,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             loss_mean = torch.tensor(0.0).cuda()
 
         if self.with_distributed_adam:
-            # launch grad reductions
-            # Note: grads in first pipeline stage have already been
-            # reduced
-            if not parallel_state.is_pipeline_first_stage():
-                self.reduce_overlap_gradients()
+            # gradients are reduced internally in distributed optimizer
+            pass
         elif self.megatron_amp_o2:
             # when using pipeline parallelism grads must be reduced after the pipeline (not asynchronously)
             if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
