@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import itertools
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -206,6 +206,19 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         else:
             self._optimizer_param_groups = get_params_for_weight_decay_optimization(self.model)
 
+    def setup_optimization(
+        self, optim_config: Optional[Union[DictConfig, Dict]] = None, optim_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        optim_kwargs = {} if optim_kwargs is None else optim_kwargs.copy()
+        if self.with_distributed_adam:
+
+            # Enable overlapped param sync by default
+            ### TODO Move up to base class
+            if 'overlap_param_sync' not in optim_kwargs:
+                optim_kwargs['overlap_param_sync'] = True
+
+        return super().setup_optimization(optim_config=optim_config, optim_kwargs=optim_kwargs)
+
     def configure_optimizers(self):
 
         if self.with_distributed_adam:
@@ -285,6 +298,18 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         # we zero grads here because we also call backward in the apex fwd/bwd functions
         self._optimizer.zero_grad()
+
+        if self.with_distributed_adam:
+            # hack to enable overlapping param sync and forward compute
+            # note: the distributed optimizer monkey-patches each
+            # parameter's __getattribute__ function so that it can
+            # launch parameter all-gathers the first time the
+            # parameter is accessed after the optimizer step. However,
+            # PyTorch directly passes embedding parameters into a C++,
+            # bypassing this process. A quick-and-dirty hack is to
+            # manually interact with the parameter.
+            for param in self.model.module.language_model.embedding.parameters():
+                param.data_ptr()
 
         if parallel_state.is_pipeline_first_stage(ignore_virtual=True) or parallel_state.is_pipeline_last_stage(
             ignore_virtual=True
