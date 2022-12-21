@@ -214,7 +214,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         if self.with_distributed_adam:
 
             # Enable overlapped param sync by default
-            ### TODO Move up to base class
             if 'overlap_param_sync' not in optim_kwargs:
                 optim_kwargs['overlap_param_sync'] = True
 
@@ -322,8 +321,14 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # PyTorch directly passes embedding parameters into a C++,
             # bypassing this process. A quick-and-dirty hack is to
             # manually interact with the parameter.
-            for param in self.model.module.language_model.embedding.parameters():
-                param.data_ptr()
+            modules = self.model if isinstance(self.model, list) else [self.module]
+            for module in modules:
+                if isinstance(module, Float16Module):
+                    module = module.module
+                module = module.language_model
+                if hasattr(module, 'embedding'):
+                    for param in module.embedding.parameters():
+                        param.data_ptr()
 
         if parallel_state.is_pipeline_first_stage(ignore_virtual=True) or parallel_state.is_pipeline_last_stage(
             ignore_virtual=True
