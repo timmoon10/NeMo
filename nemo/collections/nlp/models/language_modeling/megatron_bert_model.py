@@ -554,32 +554,9 @@ class MegatronBertModel(MegatronBaseModel):
             stage (str, optional): Can be 'fit', 'validate', 'test' or 'predict'. Defaults to None.
         """
 
-        # log number of parameters
-        if isinstance(self.model, list):
-            num_parameters_on_device = sum(
-                [sum([p.nelement() for p in model_module.parameters()]) for model_module in self.model]
-            )
-            if parallel_state.get_pipeline_model_parallel_world_size() > 1 and parallel_state.is_pipeline_last_stage(
-                ignore_virtual=True
-            ):
-                # substract the embedding weights on the last virtual stage
-                num_word_embedding_parameters = sum([p.nelement() for p in self.model[-1].word_embeddings_weight()])
-                num_parameters_on_device -= num_word_embedding_parameters
-        else:
-            num_parameters_on_device = sum([p.nelement() for p in self.model.parameters()])
-
-            if parallel_state.get_pipeline_model_parallel_world_size() > 1 and parallel_state.is_pipeline_last_stage(
-                ignore_virtual=True
-            ):
-                # substract the embedding weights on the last stage
-                num_word_embedding_parameters = sum([p.nelement() for p in self.model.word_embeddings_weight()])
-
-                num_parameters_on_device -= num_word_embedding_parameters
-
-        # to be summed across data parallel group
-        total_num_parameters = torch.tensor(num_parameters_on_device).cuda()
-
-        torch.distributed.all_reduce(total_num_parameters, group=parallel_state.get_model_parallel_group())
+        num_parameters_on_device, total_num_parameters = self._get_total_params_across_model_parallel_groups_gpt_bert(
+            self.model
+        )
 
         logging.info(
             f'Pipeline model parallel rank: {parallel_state.get_pipeline_model_parallel_rank()}, '
@@ -790,16 +767,29 @@ class MegatronBertModel(MegatronBaseModel):
                     param._disable_greedy_grad_copy = not self.megatron_amp_o2
                     param._disable_overlap_grad_sync = True
 
-            # Initialize a param bucket for each Transformer layer
+            # Initialize parameter buckets for overlapped grad and param syncs
             buckets = []
-            modules = self.model if isinstance(self.model, list) else [self.model]
-            for module in modules:
-                if isinstance(module, Float16Module):
-                    module = module.module
-                for layer in module.language_model.encoder.layers:
-                    buckets.append(
-                        [p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)]
-                    )
+            if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
+                # Initialize a bucket for each virtual pipeline stage
+                for module in self.model:
+                    if isinstance(module, Float16Module):
+                        module = module.module
+                    stage_bucket = []
+                    for layer in module.language_model.encoder.layers:
+                        stage_bucket.extend(
+                            p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)
+                        )
+                    buckets.append(stage_bucket)
+            else:
+                # Initialize a bucket for each Transformer layer
+                modules = self.model if isinstance(self.model, list) else [self.model]
+                for module in modules:
+                    if isinstance(module, Float16Module):
+                        module = module.module
+                    for layer in module.language_model.encoder.layers:
+                        buckets.append(
+                            [p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)]
+                        )
             buckets.reverse()
             used_params = set()
             for bucket in buckets:
