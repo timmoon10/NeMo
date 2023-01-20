@@ -108,12 +108,12 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             # Model wrapper to convert both model and inputs to half precision
             self.enc_dec_model = Float16Module(module=self.enc_dec_model, precision=cfg.precision)
 
-        if self.cfg.precision == 32:
-            self.autocast_dtype = torch.float
-        elif self.cfg.precision == 16:
-            self.autocast_dtype = torch.half
-        elif self.cfg.precision == 'bf16':
+        if self.cfg.precision == 'bf16':
             self.autocast_dtype = torch.bfloat16
+        elif int(self.cfg.precision) == 32:
+            self.autocast_dtype = torch.float
+        elif int(self.cfg.precision) == 16:
+            self.autocast_dtype = torch.half
         else:
             raise ValueError('precision must be in [32, 16, "bf16"]')
 
@@ -172,22 +172,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             for param in model_parallel_params:
                 param._disable_greedy_grad_copy = not self.megatron_amp_o2
                 param._disable_overlap_grad_sync = True
-
-            # Initialize a param bucket for each Transformer layer
-            buckets = []
-            module = self.enc_dec_model
-            if isinstance(module, Float16Module):
-                module = module.module
-            for layer in module.enc_dec_model.encoder.model.layers:
-                buckets.append([p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)])
-            for layer in module.enc_dec_model.decoder.model.layers:
-                buckets.append([p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)])
-            buckets.reverse()
-            used_params = set()
-            for bucket in buckets:
-                used_params.update(bucket)
-            buckets.append([p for p in self.parameters() if p not in used_params])
-            self.distributed_adam_buckets = buckets
 
         return super().configure_optimizers()
 
