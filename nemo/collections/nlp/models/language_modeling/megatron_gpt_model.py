@@ -254,6 +254,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     param._disable_overlap_grad_sync = True
 
             # Initialize parameter buckets for overlapped grad and param syncs
+            # Note: Params with disabled overlapping are put in the
+            # last param bucket
             buckets = []
             if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
                 # Initialize a bucket for each virtual pipeline stage
@@ -280,7 +282,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             used_params = set()
             for bucket in buckets:
                 used_params.update(bucket)
-            buckets.append([p for p in self.parameters() if p not in used_params])
+            buckets[-1].extend(p for p in self.parameters() if p not in used_params)
             self.distributed_adam_buckets = buckets
 
         return super().configure_optimizers()
