@@ -29,6 +29,7 @@ from nemo.collections.nlp.modules.common.megatron.clip_grads import (
     clip_grad_norm_fp32,
 )
 from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
+from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.core.optim import MainParamsOptimizerWrapper, prepare_lr_scheduler
@@ -398,24 +399,61 @@ class MegatronBaseModel(NLPModel):
         # Configure distributed optimizer
         if self.with_distributed_adam:
 
-            # Initialize param buckets if explicitly provided
-            if hasattr(self, 'distributed_adam_buckets'):
-                for bucket in self.distributed_adam_buckets:
-                    self._optimizer.init_params_bucket(bucket)
-                del self.distributed_adam_buckets
+            # Get layers corresponding to param buckets
+            # Note: If interleaved pipelining is enabled, a bucket
+            # corresponds to a virtual pipeline stage. Otherwise, a
+            # bucket corresponds to a Transformer layer.
+            layer_buckets = []
+            assert hasattr(self, 'model') or hasattr(self, 'enc_dec_model')
+            modules = self.model if hasattr(self, 'model') else self.enc_dec_model
+            if not isinstance(modules, list):
+                modules = [modules]
+            for module in modules:
+                if isinstance(module, Float16Module):
+                    module = module.module
+                if hasattr(module, 'language_model'):
+                    module = module.language_model
+                elif hasattr(module, 'enc_dec_model'):
+                    module = module.enc_dec_model
+                encoder = getattr(module, 'encoder', None)
+                if hasattr(encoder, 'model'):
+                    encoder = encoder.model
+                if encoder is not None:
+                    layer_buckets.append(encoder.layers)
+                decoder = getattr(module, 'decoder', None)
+                if hasattr(decoder, 'model'):
+                    decoder = decoder.model
+                if decoder is not None:
+                    layer_buckets.append(decoder.layers)
+            if self.cfg.get('virtual_pipeline_model_parallel_size', None) is None:
+                stages = layer_buckets
+                layer_buckets = []
+                for stage in stages:
+                    layer_buckets.extend([layer] for layer in stage)
+            layer_buckets.reverse()
 
-            # Make sure all params are initialized so main grads are
-            # available
-            # Note: Consolidate grads without overlap
-            overlap_params = []
-            no_overlap_params = []
-            for p in self.parameters():
-                if getattr(p, '_disable_overlap_grad_sync', False):
-                    no_overlap_params.append(p)
-                else:
-                    overlap_params.append(p)
-            self._optimizer.init_params(reversed(overlap_params))
-            self._optimizer.init_params(reversed(no_overlap_params))
+            # Get param buckets
+            param_buckets = []
+            for layer_bucket in layer_buckets:
+                param_bucket = []
+                for layer in layer_bucket:
+                    param_bucket.extend(
+                        p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)
+                    )
+                param_buckets.append(param_bucket)
+
+            # Put params without overlapped grad syncs in the last
+            # param bucket
+            used_params = set()
+            for param_bucket in param_buckets:
+                used_params.update(param_bucket)
+            if not param_buckets:
+                param_buckets = [[]]
+            param_buckets[-1].extend(p for p in self.parameters() if p not in used_params)
+
+            # Initialize param buckets
+            for param_bucket in param_buckets:
+                self._optimizer.init_params_bucket(param_bucket)
 
         if self._scheduler is None:
             return self._optimizer
