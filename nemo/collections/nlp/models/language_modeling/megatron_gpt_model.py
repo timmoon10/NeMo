@@ -324,7 +324,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # PyTorch directly passes embedding parameters into a C++,
             # bypassing this process. A quick-and-dirty hack is to
             # manually interact with the parameter.
-            modules = self.model if isinstance(self.model, list) else [self.module]
+            modules = self.model if isinstance(self.model, list) else [self.model]
             for module in modules:
                 if isinstance(module, Float16Module):
                     module = module.module
