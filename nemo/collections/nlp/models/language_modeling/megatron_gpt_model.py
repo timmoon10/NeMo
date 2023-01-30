@@ -214,8 +214,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         optim_kwargs = {} if optim_kwargs is None else optim_kwargs.copy()
         if self.with_distributed_adam:
 
-            # Enable overlapped param sync by default
-            if 'overlap_param_sync' not in optim_kwargs:
+            if self.megatron_amp_o2:
+                # Enable overlapped param sync by default
                 optim_kwargs['overlap_param_sync'] = True
 
         return super().setup_optimization(optim_config=optim_config, optim_kwargs=optim_kwargs)
