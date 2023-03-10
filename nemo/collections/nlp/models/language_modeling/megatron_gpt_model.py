@@ -346,6 +346,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         # handle asynchronous grad reduction
         custom_sync_context_handler = None
         custom_grad_sync_func = None
+        custom_param_sync_func = None
         if self.with_distributed_adam:
             if self.megatron_amp_o2:
                 # copy grads to main grad
@@ -354,6 +355,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 # keep grad tensors around
                 custom_sync_context_handler = lambda: self._optimizer.no_sync(greedy_grad_copy=False)
             custom_grad_sync_func = self.reduce_overlap_gradients
+            custom_param_sync_func = self.sync_overlap_parameters
         else:
             if self.megatron_amp_o2 and not self.cfg.get('sequence_parallel', False):
                 custom_sync_context_handler = self._optimizer.no_sync
