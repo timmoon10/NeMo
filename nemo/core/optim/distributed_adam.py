@@ -317,6 +317,9 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
 
     def load_state_dict(self, state_dict):
         if self._fp32_optim is not None and 'fp32_optim' in state_dict:
+            for param_group in state_dict['fp32_optim']['param_groups']:
+                if 'params' not in param_group:
+                    param_group['params'] = []
             self._fp32_optim.load_state_dict(state_dict['fp32_optim'])
             del state_dict['fp32_optim']
             for old_main_param, new_main_param in zip(
