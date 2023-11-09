@@ -45,12 +45,12 @@ RUN apt-get update && \
 WORKDIR /workspace/
 
 WORKDIR /tmp/
-# TODO: Remove once this Apex commit (5/12/23) is included in PyTorch
-# container
+
+# Distributed Adam support for multiple dtypes
 RUN git clone https://github.com/NVIDIA/apex.git && \
   cd apex && \
-  git checkout 8b7a1ff183741dd8f9b87e7bafd04cfde99cea28 && \
-  pip3 install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
+  git checkout 2386a912164b0c5cfcd8be7a2b890fbac5607c82 && \
+  pip3 install -v --no-build-isolation --config-settings --build-option="--cpp_ext --cuda_ext --fast_layer_norm --distributed_adam --deprecated_fused_adam" .
 
 # uninstall stuff from base container
 RUN pip3 uninstall -y sacrebleu torchtext
