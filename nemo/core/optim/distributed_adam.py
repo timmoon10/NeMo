@@ -90,9 +90,9 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                     filter(lambda param: getattr(param, '_with_fp32_optimizer', False), param_group['params'])
                 )
             if fp32_params:
-                assert self.dtype == torch.float32, (
-                    f'Param requires FP32 state but optimizer is initialized with {self.dtype}'
-                )
+                assert (
+                    self.dtype == torch.float32
+                ), f'Param requires FP32 state but optimizer is initialized with {self.dtype}'
                 self.init_params_bucket(
                     fp32_params, grad_sync_dtype=torch.float32,
                 )
