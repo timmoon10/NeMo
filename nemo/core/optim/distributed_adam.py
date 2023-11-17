@@ -15,6 +15,7 @@
 import collections
 from typing import Callable, Dict, Iterable, Optional, Union
 
+import torch
 from apex.contrib.optimizers.distributed_fused_adam import (
     DistributedFusedAdam,
     _disable_pre_forward_hook,
@@ -24,7 +25,6 @@ from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.dict_utils import dict_list_map_inplace
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.optimizer import get_param_id_to_sharded_param_map, optim_state_to_sharding_state
-import torch
 
 from nemo.utils import str_to_dtype
 
