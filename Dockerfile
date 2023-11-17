@@ -47,7 +47,7 @@ WORKDIR /workspace/
 # We leave it here in case we need to work off of a specific commit in main
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
   cd Megatron-LM && \
-  git checkout 375395c187ff64b8d56a1cd40572bc779864b1bd && \
+  git checkout e122536b7645edcb7ebf099b5c92a443f7dbf8e7 && \
   pip install .
 
 # Distributed Adam support for multiple dtypes
@@ -58,7 +58,7 @@ RUN git clone https://github.com/NVIDIA/apex.git && \
 
 RUN git clone https://github.com/NVIDIA/TransformerEngine.git && \
   cd TransformerEngine && \
-  git fetch origin 66d91d5219f295ec1e2e714a4926ddb67a2b8f80 && \
+  git fetch origin 8eae4ce2b8fdfbbe525fc8bfecb0df5498cc9687 && \
   git checkout FETCH_HEAD && \
   git submodule init && git submodule update && \
   NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .
