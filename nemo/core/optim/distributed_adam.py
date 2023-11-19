@@ -36,6 +36,7 @@ try:
 
     HAVE_TE_FP8TENSOR = True
 except (ImportError, ModuleNotFoundError):
+    # Float8Tensor not found
     pass
 
 
@@ -284,7 +285,7 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         # Make all params a view into the param buffer
         for param, buffer_view in zip(params, param_buffer_views):
             if _is_fp8_tensor(param):
-                param._data = buffer_view.view(param.size())
+                param._data.data = buffer_view.view(param.size())
             else:
                 param.data = buffer_view.view(param.size())
 
@@ -357,7 +358,6 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                 continue
 
             # Corresponding positions in bucket and param
-            state_bucket = self.state["buckets"][bucket_id]
             param_bucket = self._params_buckets[bucket_id]
             param = self.parameter(fragment)
             buffer_in = param_bucket.params_bucket[bucket_start:bucket_end]
@@ -391,6 +391,12 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         _multi_tensor_copy(
             buffers_in, buffers_out, dummy_overflow_buf=self._dummy_overflow_buf,
         )
+
+        # Update transpose caches
+        params = set(self.parameter(fragment) for fragment in fragments)
+        for param in params:
+            if _is_fp8_tensor(param):
+                param.transpose(update_cache=True)
 
     @torch.no_grad()
     def _check_params_shard_dtypes(self, params_buckets: Dict[int, DistributedFusedAdam.ParameterBucket]) -> None:
