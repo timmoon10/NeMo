@@ -298,10 +298,7 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                 param.data = buffer_view.view(param.size())
 
     @contextlib.contextmanager
-    def no_sync(
-        self,
-        greedy_grad_copy: None = False,
-    ) -> contextlib.AbstractContextManager:
+    def no_sync(self, greedy_grad_copy: None = False,) -> contextlib.AbstractContextManager:
         if self.eager_grad_sync:
             yield
         else:
