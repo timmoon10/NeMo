@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import collections
+import contextlib
 from typing import Callable, Dict, Iterable, Optional, Union
 
 import torch
@@ -56,8 +57,15 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         self,
         params: Union[Iterable[torch.nn.Parameter], Iterable[dict]],
         disable_distributed_parameters: bool = False,
+        eager_grad_sync: bool = False,
         **kwargs,
     ):
+
+        # Eagerly reduce grads for ZeRO-2/3
+        # Note: contiguous_grad_buffer should be disabled to get
+        # memory savings, which in turn requires disabling O2-style
+        # optimizations.
+        self.eager_grad_sync: bool = eager_grad_sync
 
         # Initialize process groups
         if 'process_group' not in kwargs and not parallel_state.is_unitialized():
@@ -288,6 +296,17 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                 param._data.data = buffer_view.view(param.size())
             else:
                 param.data = buffer_view.view(param.size())
+
+    @contextlib.contextmanager
+    def no_sync(
+        self,
+        greedy_grad_copy: None = False,
+    ) -> contextlib.AbstractContextManager:
+        if self.eager_grad_sync:
+            yield
+        else:
+            with super().no_sync(greedy_grad_copy=greedy_grad_copy):
+                yield
 
     def try_grad_sync(self, params: Iterable[torch.nn.Parameter]) -> None:
         def is_grad_copy_enabled(param: torch.nn.Parameter) -> bool:

@@ -473,8 +473,13 @@ class MegatronBaseModel(NLPModel):
 
         if self.with_distributed_adam:
 
-            # Allocate contiguous buffer to avoid extra copies
-            optim_kwargs['contiguous_grad_buffer'] = True
+            # Allocate contiguous grad buffer to avoid extra copies
+            optim_kwargs['contiguous_grad_buffer'] = get_config_arg('contiguous_grad_buffer', True)
+            if self.megatron_amp_O2 and not optim_kwargs['contiguous_grad_buffer']:
+                raise ValueError(
+                    "Distributed Adam optimizer requires contiguous param buffer for O2. "
+                    "Either enable contiguous_grad_buffer or disable megatron_amp_O2."
+                )
 
             # Make sure optimizer state is in FP32
             optim_dtype = str_to_dtype(get_config_arg('dtype', torch.float32))
