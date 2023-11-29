@@ -17,7 +17,7 @@ import itertools
 import os
 import re
 from dataclasses import fields
-from typing import Any, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 import omegaconf
 import torch
@@ -586,6 +586,18 @@ class MegatronBaseModel(NLPModel):
                     overlap_params.append(p)
             self._optimizer.init_params(reversed(overlap_params))
             self._optimizer.init_params(reversed(no_overlap_params))
+
+            # Attach FSDP callback hooks to model layers
+            if getattr(self, 'distributed_adam_fsdp_modules') and self._optimizer.fully_sharded:
+                def make_fsdp_forward_hook() -> Callable:
+                    def hook(module, input, output) -> None:
+                        self._optimizer._reset_gathered_params(module.parameters())
+                    return hook
+                for module in self.distributed_adam_fsdp_modules:
+                    module.register_forward_hook(make_fsdp_forward_hook())
+                self._optimizer._reset_gathered_params(self._optimizer.parameters())
+            if hasattr(self, 'distributed_adam_fsdp_modules'):
+                del self.distributed_adam_fsdp_modules
 
             # Initialize contiguous parameter buffer
             if self._optimizer.contiguous_param_buffer:

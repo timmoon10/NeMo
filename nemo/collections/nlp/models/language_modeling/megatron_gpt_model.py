@@ -452,6 +452,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # Note: Params with disabled overlapping are put in the
             # last param bucket
             buckets = []
+            fsdp_modules = []
             if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
                 # Initialize a bucket for each virtual pipeline stage
                 for module in self.model:
@@ -464,6 +465,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                             p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)
                         )
                     buckets.append(stage_bucket)
+                    fsdp_modules.extend(layers)
             else:
                 # Initialize a bucket for each Transformer layer
                 modules = self.model if isinstance(self.model, list) else [self.model]
@@ -475,8 +477,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                         buckets.append(
                             [p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)]
                         )
+                    fsdp_modules.extend(layers)
             buckets.reverse()
             self.distributed_adam_buckets = buckets
+            self.distributed_adam_fsdp_modules = fsdp_modules
 
         return super().configure_optimizers()
 

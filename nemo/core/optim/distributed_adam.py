@@ -58,6 +58,7 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         params: Union[Iterable[torch.nn.Parameter], Iterable[dict]],
         disable_distributed_parameters: bool = False,
         eager_grad_sync: bool = False,
+        fully_sharded: bool = False,
         **kwargs,
     ):
 
@@ -66,6 +67,12 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         # memory savings, which in turn requires disabling O2-style
         # optimizations.
         self.eager_grad_sync: bool = eager_grad_sync
+
+        # Params and grads are fully sharded (ZeRO-3/FSDP)
+        self.fully_sharded: bool = fully_sharded
+        if "store_params" not in kwargs:
+            kwargs["store_params"] = True
+        assert kwargs["store_params"] ### TODO
 
         # Initialize process groups
         if 'process_group' not in kwargs and not parallel_state.is_unitialized():
@@ -121,9 +128,13 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                     'or run DistributedFusedAdam with overlap_param_sync=False.'
                 )
             with self._lock:
+
+                # Initialize param state if needed
                 need_to_initialize = 'fragments' not in self.state[param]
                 if need_to_initialize:
                     self._init_param_state(param, param_group_id, param_id)
+
+                # Launch grad reduction if needed
                 if self.greedy_grad_copy and not getattr(param, '_disable_greedy_grad_copy', False):
                     self._grad_copy(param)
                     if self.overlap_grad_sync and not getattr(param, '_disable_overlap_grad_sync', False):
@@ -131,7 +142,29 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                             params=[param], ignore_last_bucket=need_to_initialize,
                         )
 
+                # Deallocate params for FSDP
+                if self.fully_sharded:
+                    self._reset_gathered_params([param])
+
         return hook
+
+    def _make_pre_forward_hook(
+        self,
+        param: torch.nn.Parameter,
+        param_group_id: int,
+        param_id: int,
+    ) -> Callable:
+
+        def pre_forward_hook(*unused) -> None:
+            with self._lock:
+                if "fragments" not in self.state[param]:
+                    return
+                self._param_copy(param)
+                if self.overlap_param_sync:
+                    if not self.fully_sharded: ### TODO Restore async comm
+                        self._try_start_bucket_param_sync()
+
+        return pre_forward_hook
 
     def init_params(
         self,
@@ -325,6 +358,10 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                 with _disable_pre_forward_hook(param):
                     param.main_grad = self.grad_buffer_view(param)
 
+        # Reset params for FSDP
+        if self.fully_sharded:
+            self._reset_gathered_params(self.parameters())
+
     def grad_norm(
         self, parameters: Optional[Iterable[torch.nn.Parameter]] = None, norm_type: float = 2.0, force: bool = False,
     ) -> torch.Tensor:
@@ -382,6 +419,8 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                 assert (
                     param_bucket.params_bucket.dtype == torch.uint8
                 ), "Expected FP8 params to perform param sync in UINT8"
+                if param._data is None:
+                    param._data = torch.empty(param.size(), dtype=torch.uint8, device=param.device)
                 buffer_out = param._data.view(-1)[param_start:param_end]
                 buffers_in.append(buffer_in)
                 buffers_out.append(buffer_out)
@@ -409,10 +448,11 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         )
 
         # Update transpose caches
-        params = set(self.parameter(fragment) for fragment in fragments)
-        for param in params:
-            if _is_fp8_tensor(param):
-                param.transpose(update_cache=True)
+        if not self.fully_sharded:
+            params = set(self.parameter(fragment) for fragment in fragments)
+            for param in params:
+                if _is_fp8_tensor(param):
+                    param.transpose(update_cache=True)
 
     @torch.no_grad()
     def _check_params_shard_dtypes(self, params_buckets: Dict[int, DistributedFusedAdam.ParameterBucket]) -> None:
@@ -456,7 +496,7 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         )
 
         # Cast local data to FP8
-        fp8_params_shards = dict()
+        self._fp8_params_shards = dict() ### TODO Think of persistent memory usage
         for param in self.parameters():
             if not _is_fp8_tensor(param):
                 continue
@@ -485,18 +525,20 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                     continue
 
                 # Allocate FP8 buffer if needed
-                if bucket_id not in fp8_params_shards:
-                    fp8_params_shards[bucket_id] = torch.empty_like(param_bucket.params_shard, dtype=torch.uint8)
+                if bucket_id not in self._fp8_params_shards:
+                    self._fp8_params_shards[bucket_id] = torch.empty_like(
+                        param_bucket.params_shard, dtype=torch.uint8,
+                    )
 
                 # FP8 cast and amax
                 fp32_fragment = param_bucket.params_shard[shard_range].view(1, -1)
-                fp8_fragment = fp8_params_shards[bucket_id][shard_range].view(1, -1)
+                fp8_fragment = self._fp8_params_shards[bucket_id][shard_range].view(1, -1)
                 cast_to_fp8(
                     fp32_fragment, fp8_meta, fp8_meta_index, fp8_dtype, out=fp8_fragment,
                 )
 
         # Update param shards with FP8 buffers
-        for bucket_id, params_shard in fp8_params_shards.items():
+        for bucket_id, params_shard in self._fp8_params_shards.items():
             params_buckets[bucket_id].params_shard = params_shard
 
         # Reduce amaxes
@@ -515,6 +557,62 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
 
         # Handle any remaining dtype conversions
         super()._check_params_shard_dtypes(params_buckets)
+
+    def _reset_gathered_params(self, params: Iterable[torch.nn.Parameter]) -> None:
+
+        # Only support FSDP for FP8 params
+        params = list(filter(_is_fp8_tensor, params))
+        if not params:
+            return
+
+        # Find buckets corresponding to params
+        bucket_ids = set()
+        for param in params:
+            for fragment in self.state[param]["fragments"]:
+                bucket_ids.add(fragment.bucket_id)
+        bucket_ids = list(bucket_ids)
+        bucket_ids.sort()
+
+        # Initialize param syncs for buckets
+        for bucket_id in bucket_ids:
+            if bucket_id in self._params_buckets:
+                continue
+            self._params_buckets[bucket_id] = self.ParameterBucket()
+            param_bucket = self._params_buckets[bucket_id]
+            state_bucket = self.state["buckets"][bucket_id]
+
+            if not hasattr(self, "_fp8_params_shards"):
+                self._fp8_params_shards = dict()
+            if bucket_id in self._fp8_params_shards:
+                # Reuse param shard
+                param_bucket.params_shard = self._fp8_params_shards[bucket_id]
+            else:
+                # Initialize param shard by casting to FP8
+                param_bucket.params_shard = torch.empty(
+                    [state_bucket.shard_size],
+                    dtype=torch.uint8,
+                    device=self.device,
+                )
+                self._fp8_params_shards[bucket_id] = param_bucket.params_shard
+                for fragment in self.state["buckets"][bucket_id].fragments:
+                    if not fragment.in_local_shard:
+                        continue
+                    shard_start, shard_end = fragment.shard_range
+                    if shard_end <= shard_start:
+                        continue
+                    param = self.parameter(fragment)
+                    buffer_in = state_bucket.params_shard[shard_start:shard_end]
+                    buffer_out = param_bucket.params_shard[shard_start:shard_end]
+                    with _disable_pre_forward_hook(param):
+                        buffer_out = param.make_like(data=buffer_out, fp8_attrs=param._fp8_attrs)
+                    buffer_out.copy_(buffer_in)
+
+        # Deallocate params
+        for param in params:
+            with _disable_pre_forward_hook(param):
+                param._data = None
+                param._reset_caches()
+            param._pre_forward_hook_is_enabled = True
 
     def sharded_state_dict(self, model_sharded_state_dict):
         optimizer_state_dict = self.state_dict()
