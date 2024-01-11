@@ -624,7 +624,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                         param.data_ptr()
 
         loss_mean = self.fwd_bwd_step(dataloader_iter, batch_idx, False)
-        
+
         if self.cfg.get('fp8', False):
             self.prev_step_training = self.training
 
@@ -1058,7 +1058,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.prev_step_training = self.training
         else:
             first_val_step = None
-        
+
         loss = self.fwd_bwd_step(dataloader_iter, batch_idx, True, first_val_step)
 
         if isinstance(self.model, list):
