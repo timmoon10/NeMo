@@ -15,6 +15,8 @@
 """Gradient clipping."""
 
 import itertools
+from typing import Optional, Union
+
 import torch
 from torch import inf
 
@@ -40,7 +42,7 @@ if HAVE_APEX:
         HAVE_APEX_DISTRIBUTED_ADAM = True
 
     except (ImportError, ModuleNotFoundError):
-        pass
+        DistributedFusedAdam = None
 
 try:
     from megatron.core import parallel_state
@@ -211,7 +213,12 @@ def count_zeros_fp32(parameters):
     return total_num_zeros
 
 
-def clip_grad_norm_distributed_optimizer(optimizer, max_norm, norm_type=2):
+def clip_grad_norm_distributed_optimizer(
+    optimizer: DistributedFusedAdam,
+    max_norm: float,
+    norm_type: Union[float, int] = 2,
+    grad_scaler: Optional[torch.cuda.amp.GradScaler] = None,
+):
     """Clips gradient norm of parameters in distributed optimizer
 
     This is a wrapper around DistributedFusedAdam.clip_grad_norm with
@@ -219,7 +226,7 @@ def clip_grad_norm_distributed_optimizer(optimizer, max_norm, norm_type=2):
 
     Arguments:
         parameters (DistributedFusedAdam): distributed optimizer
-        max_norm (float or int): max norm of the gradients
+        max_norm (float): max norm of the gradients
         norm_type (float or int): type of the used p-norm. Currently
             only 2-norm is supported.
 
@@ -243,5 +250,9 @@ def clip_grad_norm_distributed_optimizer(optimizer, max_norm, norm_type=2):
     # Note: DistributedFusedAdam caches grad norm to avoid redundant
     # communication.
     optimizer.grad_norm(parameters=params_for_norm, norm_type=norm_type)
+
+    # Unscale grads if grad scaler is provided
+    if grad_scaler is not None:
+        optimizer.unscale_grads(grad_scaler=grad_scaler)
 
     return optimizer.clip_grad_norm(max_norm, norm_type=norm_type)

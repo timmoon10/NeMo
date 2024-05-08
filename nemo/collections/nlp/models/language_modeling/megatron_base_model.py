@@ -621,7 +621,19 @@ class MegatronBaseModel(NLPModel):
             return super().configure_gradient_clipping(*args, **kwargs)
 
         if self.with_distributed_adam:
-            grad_norm = clip_grad_norm_distributed_optimizer(self._optimizer, clip_val)
+            grad_scaler = None
+            if self.trainer.precision_plugin is not None and isinstance(
+                self.trainer.precision_plugin, MixedPrecisionPlugin
+            ):
+                precision_plugin = self.trainer.precision_plugin
+                grad_scaler = getattr(self.trainer.precision_plugin, 'scaler', None)
+                if not isinstance(grad_scaler, GradScaler):
+                    grad_scaler = None
+            grad_norm = clip_grad_norm_distributed_optimizer(
+                self._optimizer,
+                clip_val,
+                grad_scaler=grad_scaler,
+            )
         else:
             if self.megatron_amp_O2:
                 # grep fp32 master parameters for gradient clipping
