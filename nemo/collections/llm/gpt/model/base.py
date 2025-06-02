@@ -159,7 +159,8 @@ def transformer_engine_layer_spec(config: "GPTConfig") -> ModuleSpec:
         "qk_layernorm": config.qk_layernorm,
         "fp8": bool(config.num_moe_experts and (config.fp8 is not None)),
     }
-    if getattr(config, "use_transformer_engine_op_fuser", None) is not None:
+    if config.use_transformer_engine_op_fuser:
+        # This option is not backward compatible. Only set if enabled.
         kwargs["use_te_op_fuser"] = config.use_transformer_engine_op_fuser
     return gpt_layer_specs.get_gpt_layer_with_transformer_engine_spec(**kwargs)
 
